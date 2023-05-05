@@ -51,7 +51,7 @@ const config: HardhatUserConfig = {
   },
   gasReporter: {
     coinmarketcap: CMC,
-    currency: "ETH"
+    currency: "eur"
   }
 };
 

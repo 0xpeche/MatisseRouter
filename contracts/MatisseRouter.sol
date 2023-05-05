@@ -4,6 +4,7 @@ pragma solidity ^0.8.0;
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IWETH} from "./interfaces/IWETH.sol";
 import {IUniswapV2Pair} from "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
+import {SafeTransfer} from "./lib/SafeTransfer.sol";
 
 // &&&&&&&&&%%%&%#(((/,,,**,,,**,,,*******/*,,/%%%%%%#.,%%%%%%%%%%%%%%%% ./(#%%%%/. #%%/***,,*,*,,,,**,
 // %&&&&&&&&&%%%/((((*,,,,,,,**/.,,,*****/%%#.      ,**,,%%%%%%%%%%%%%%%%%%#.     #%%%%%#*,,,,,,*,,,,,*
@@ -19,6 +20,7 @@ import {IUniswapV2Pair} from "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pa
 // .,,,,..,*..,.,,,,...*%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%,(%#%%%(*/*///*//#%
 
 contract MatisseRouter {
+    using SafeTransfer for IERC20;
     address public constant FEE_ADDRESS =
         address(0xafC61DD9Ec784c917C444E4FAC0FB8fAaD1fcA83);
 
@@ -36,7 +38,7 @@ contract MatisseRouter {
         uint feeAmount = msg.value - ((msg.value * feeBps) / 1000);
         uint amountIn = msg.value - feeAmount;
 
-        safeTransferETH(FEE_ADDRESS, feeAmount);
+        SafeTransfer.safeTransferETH(FEE_ADDRESS, feeAmount);
 
         WETH.deposit{value: amountIn}();
 
@@ -87,7 +89,7 @@ contract MatisseRouter {
         uint amountIn
     ) external {
         // Optimistically send amountIn of inputToken to targetPair
-        IERC20(tokenIn).transferFrom(msg.sender, targetPair, amountIn);
+        IERC20(tokenIn).safeTransferFrom(msg.sender, targetPair, amountIn);
 
         // Prepare variables for calculating expected amount out
         uint reserveIn;
@@ -133,8 +135,63 @@ contract MatisseRouter {
 
         uint feeAmount = amountOut - ((amountOut * feeBps) / 1000);
 
-        safeTransferETH(msg.sender, amountOut - feeAmount);
-        safeTransferETH(FEE_ADDRESS, feeAmount);
+        SafeTransfer.safeTransferETH(msg.sender, amountOut - feeAmount);
+        SafeTransfer.safeTransferETH(FEE_ADDRESS, feeAmount);
+    }
+
+    function swapExactTokensForTokens(
+        address tokenIn,
+        address tokenOut,
+        address targetPair,
+        uint amountIn
+    ) external {
+        // Optimistically send amountIn of inputToken to targetPair
+        IERC20(tokenIn).safeTransferFrom(msg.sender, targetPair, amountIn);
+
+        // Prepare variables for calculating expected amount out
+        uint reserveIn;
+        uint reserveOut;
+
+        {
+            // Avoid stack too deep error
+            (uint reserve0, uint reserve1, ) = IUniswapV2Pair(targetPair)
+                .getReserves();
+
+            // sort reserves
+            if (tokenIn < tokenOut) {
+                // Token0 is equal to inputToken
+                // Token1 is equal to outputToken
+                reserveIn = reserve0;
+                reserveOut = reserve1;
+            } else {
+                // Token0 is equal to outputToken
+                // Token1 is equal to inputToken
+                reserveIn = reserve1;
+                reserveOut = reserve0;
+            }
+        }
+
+        // Find the actual amountIn sent to pair (accounts for tax if any) and amountOut
+        uint actualAmountIn = IERC20(tokenIn).balanceOf(address(targetPair)) -
+            reserveIn;
+        uint amountOut = _getAmountOut(actualAmountIn, reserveIn, reserveOut);
+
+        // Prepare swap variables and call pair.swap()
+        (uint amount0Out, uint amount1Out) = tokenIn < tokenOut
+            ? (uint(0), amountOut)
+            : (amountOut, uint(0));
+
+        IUniswapV2Pair(targetPair).swap(
+            amount0Out,
+            amount1Out,
+            address(this),
+            new bytes(0)
+        );
+
+        uint feeAmount = amountOut - ((amountOut * feeBps) / 1000);
+
+        IERC20(tokenOut).safeTransfer(msg.sender, amountOut - feeAmount);
+        IERC20(tokenOut).safeTransfer(FEE_ADDRESS, feeAmount);
     }
 
     function _getAmountOut(
@@ -156,17 +213,5 @@ contract MatisseRouter {
     function setFee(uint32 feeBps_) external {
         require(msg.sender == FEE_ADDRESS, "not-authorized");
         feeBps = feeBps_;
-    }
-
-    function safeTransferETH(address to, uint256 amount) internal {
-        bool success;
-
-        /// @solidity memory-safe-assembly
-        assembly {
-            // Transfer the ETH and store if it succeeded or not.
-            success := call(gas(), to, amount, 0, 0, 0, 0)
-        }
-
-        require(success, "ETH_TRANSFER_FAILED");
     }
 }
