@@ -66,7 +66,7 @@ contract MatisseRouter02 {
 
         - tokenIn: address      - Address of the token you're swapping
         - tokenOut: address     - Address of the token you want
-        - pair: address         - Univ2 pair you're sandwiching on
+        - pair: address         - Univ2 pair
         - amountIn?: uint128     - Amount you're giving via swap
 
     */
