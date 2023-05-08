@@ -1,12 +1,15 @@
 import { ethers } from "hardhat";
 import { loadFixture } from "ethereum-waffle";
+import { MatisseRouter } from "../typechain-types";
+import { SignerWithAddress } from "@nomiclabs/hardhat-ethers/signers";
+import { ERC20 } from "../typechain-types/ERC20";
 
 describe("Router", function () {
     async function deployRouterFixture() {
         // Contracts are deployed using the first signer/account by default
         const [owner, otherAccount] = await ethers.getSigners();
 
-        const Router = await ethers.getContractFactory("MatisseRouter02");
+        const Router = await ethers.getContractFactory("MatisseRouter");
         const router = await Router.deploy();
 
         const usdc = await ethers.getContractAt("IERC20", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
@@ -19,9 +22,24 @@ describe("Router", function () {
     }
 
     describe("Swaps", function () {
-        it("Should swap ETH for USDC and back", async function () {
-            const { router, otherAccount, usdc, weth, dai } = await loadFixture(deployRouterFixture)
+        let router: MatisseRouter
+        let otherAccount: SignerWithAddress;
+        let usdc: ERC20;
+        let weth: string;
+        let dai: ERC20;
+        let owner: SignerWithAddress;
 
+        beforeEach(async () => {
+            const fixture = await loadFixture(deployRouterFixture)
+            router = fixture.router
+            otherAccount = fixture.otherAccount
+            usdc = fixture.usdc
+            weth = fixture.weth
+            dai = fixture.dai
+            owner = fixture.owner
+        })
+
+        it("Should work kek", async function () {
             // Swap ETH For USDC
 
             const data = ethers.utils.solidityPack(["address", "address", "address"], [weth, usdc.address, "0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc"])
@@ -100,6 +118,12 @@ describe("Router", function () {
             const balTokenOut3 = await dai.balanceOf(otherAccount.address)
             console.log(ethers.utils.formatUnits(balTokenOut3, 18), " balTokenOut")
 
+            // Retrieve Fees
+            const ethBalOwnerBef = await ethers.provider.getBalance(owner.address)
+            await router.connect(owner).recover("0x0000000000000000000000000000000000000000")
+            await router.connect(owner).recover(dai.address)
+            console.log(ethers.utils.formatEther(await dai.balanceOf(owner.address)), " balance dai owner")
+            console.log(ethers.utils.formatEther((await ethers.provider.getBalance(owner.address)).sub(ethBalOwnerBef)), " balance eth owner")
         });
     });
 });

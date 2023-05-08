@@ -1,10 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-pragma solidity ^0.8.0;
+
+pragma solidity ^0.8.19;
 
 import {IERC20} from "./interfaces/IERC20.sol";
-import {IWETH} from "./interfaces/IWETH.sol";
-import {IUniswapV2Pair} from "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
 import {SafeTransfer} from "./lib/SafeTransfer.sol";
+import {IWETH} from "./interfaces/IWETH.sol";
+
+interface IUniswapV2Pair {
+    function getReserves()
+        external
+        view
+        returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+
+    function swap(
+        uint amount0Out,
+        uint amount1Out,
+        address to,
+        bytes calldata data
+    ) external;
+}
 
 // &&&&&&&&&%%%&%#(((/,,,**,,,**,,,*******/*,,/%%%%%%#.,%%%%%%%%%%%%%%%% ./(#%%%%/. #%%/***,,*,*,,,,**,
 // %&&&&&&&&&%%%/((((*,,,,,,,**/.,,,*****/%%#.      ,**,,%%%%%%%%%%%%%%%%%%#.     #%%%%%#*,,,,,,*,,,,,*
@@ -21,140 +35,85 @@ import {SafeTransfer} from "./lib/SafeTransfer.sol";
 
 contract MatisseRouter {
     using SafeTransfer for IERC20;
-    address public constant FEE_ADDRESS =
-        address(0xafC61DD9Ec784c917C444E4FAC0FB8fAaD1fcA83);
+    using SafeTransfer for IWETH;
 
-    IWETH public constant WETH =
-        IWETH(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+    address internal immutable feeAddress;
 
-    uint32 public feeBps = 875;
+    address internal constant WETH9 =
+        0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+
+    uint32 internal constant FEE_NUMERATOR = 875;
+    uint32 internal constant FEE_DENOMINATOR = 100000;
+
+    constructor() {
+        feeAddress = msg.sender;
+    }
 
     receive() external payable {}
 
-    function swapExactETHForTokens(
-        address tokenOut,
-        address targetPair
-    ) external payable {
-        uint feeAmount = msg.value - ((msg.value * feeBps) / 1000);
-        uint amountIn = msg.value - feeAmount;
-
-        SafeTransfer.safeTransferETH(FEE_ADDRESS, feeAmount);
-
-        WETH.deposit{value: amountIn}();
-
-        // Optimistically send amountIn of inputToken to targetPair
-        WETH.transfer(targetPair, amountIn);
-
-        // Prepare variables for calculating expected amount out
-        uint reserveIn;
-        uint reserveOut;
-
-        {
-            // Avoid stack too deep error
-            (uint reserve0, uint reserve1, ) = IUniswapV2Pair(targetPair)
-                .getReserves();
-
-            // sort reserves
-            if (address(WETH) < tokenOut) {
-                // Token0 is equal to inputToken
-                // Token1 is equal to outputToken
-                reserveIn = reserve0;
-                reserveOut = reserve1;
-            } else {
-                // Token0 is equal to outputToken
-                // Token1 is equal to inputToken
-                reserveIn = reserve1;
-                reserveOut = reserve0;
-            }
+    // *** Receive profits from contract *** //
+    function recover(address token) public {
+        require(msg.sender == feeAddress, "shoo");
+        if (token == address(0)) {
+            SafeTransfer.safeTransferETH(msg.sender, address(this).balance);
+            return;
+        } else {
+            IERC20(token).safeTransfer(
+                msg.sender,
+                IERC20(token).balanceOf(address(this))
+            );
         }
-
-        uint amountOut = _getAmountOut(amountIn, reserveIn, reserveOut);
-
-        // Prepare swap variables and call pair.swap()
-        (uint amount0Out, uint amount1Out) = address(WETH) < tokenOut
-            ? (uint(0), amountOut)
-            : (amountOut, uint(0));
-
-        IUniswapV2Pair(targetPair).swap(
-            amount0Out,
-            amount1Out,
-            msg.sender,
-            new bytes(0)
-        );
     }
 
-    function swapExactTokensForETH(
-        address tokenIn,
-        address targetPair,
-        uint amountIn
-    ) external {
-        // Optimistically send amountIn of inputToken to targetPair
-        IERC20(tokenIn).safeTransferFrom(msg.sender, targetPair, amountIn);
+    /*
+        Payload structure
 
-        // Prepare variables for calculating expected amount out
-        uint reserveIn;
-        uint reserveOut;
+        - tokenIn: address      - Address of the token you're swapping
+        - tokenOut: address     - Address of the token you want
+        - pair: address         - Univ2 pair
+        - amountIn?: uint128     - Amount you're giving via swap
 
-        {
-            // Avoid stack too deep error
-            (uint reserve0, uint reserve1, ) = IUniswapV2Pair(targetPair)
-                .getReserves();
+    */
 
-            // sort reserves
-            if (tokenIn < address(WETH)) {
-                // Token0 is equal to inputToken
-                // Token1 is equal to outputToken
-                reserveIn = reserve0;
-                reserveOut = reserve1;
-            } else {
-                // Token0 is equal to outputToken
-                // Token1 is equal to inputToken
-                reserveIn = reserve1;
-                reserveOut = reserve0;
-            }
+    fallback() external payable {
+        address tokenIn;
+        address tokenOut;
+        address pair;
+        uint amountIn;
+        address receiver;
+
+        assembly {
+            // bytes20
+            tokenIn := shr(96, calldataload(0))
+            // bytes20
+            tokenOut := shr(96, calldataload(20))
+            // bytes20
+            pair := shr(96, calldataload(40))
         }
 
-        // Find the actual amountIn sent to pair (accounts for tax if any) and amountOut
-        uint actualAmountIn = IERC20(tokenIn).balanceOf(address(targetPair)) -
-            reserveIn;
-        uint amountOut = _getAmountOut(actualAmountIn, reserveIn, reserveOut);
+        if (address(tokenIn) == WETH9 && msg.value > 0) {
+            uint feeAmount = (msg.value * FEE_NUMERATOR) / FEE_DENOMINATOR;
+            amountIn = msg.value - feeAmount;
+            IWETH weth = IWETH(WETH9);
 
-        // Prepare swap variables and call pair.swap()
-        (uint amount0Out, uint amount1Out) = tokenIn < address(WETH)
-            ? (uint(0), amountOut)
-            : (amountOut, uint(0));
-
-        IUniswapV2Pair(targetPair).swap(
-            amount0Out,
-            amount1Out,
-            address(this),
-            new bytes(0)
-        );
-
-        WETH.withdraw(amountOut);
-
-        uint feeAmount = amountOut - ((amountOut * feeBps) / 1000);
-
-        SafeTransfer.safeTransferETH(msg.sender, amountOut - feeAmount);
-        SafeTransfer.safeTransferETH(FEE_ADDRESS, feeAmount);
-    }
-
-    function swapExactTokensForTokens(
-        address tokenIn,
-        address tokenOut,
-        address targetPair,
-        uint amountIn
-    ) external {
-        // Optimistically send amountIn of inputToken to targetPair
-        IERC20(tokenIn).safeTransferFrom(msg.sender, targetPair, amountIn);
+            weth.deposit{value: amountIn}();
+            weth.safeTransfer(pair, amountIn);
+            receiver = msg.sender;
+        } else {
+            assembly {
+                // uint128
+                amountIn := shr(128, calldataload(60))
+            }
+            IERC20(tokenIn).safeTransferFrom(msg.sender, pair, amountIn);
+            receiver = address(this);
+        }
 
         // Prepare variables for calculating expected amount out
         uint reserveIn;
         uint reserveOut;
 
         {
-            // Avoid stack too deep error
-            (uint reserve0, uint reserve1, ) = IUniswapV2Pair(targetPair)
+            (uint reserve0, uint reserve1, ) = IUniswapV2Pair(pair)
                 .getReserves();
 
             // sort reserves
@@ -172,7 +131,7 @@ contract MatisseRouter {
         }
 
         // Find the actual amountIn sent to pair (accounts for tax if any) and amountOut
-        uint actualAmountIn = IERC20(tokenIn).balanceOf(address(targetPair)) -
+        uint actualAmountIn = IERC20(tokenIn).balanceOf(address(pair)) -
             reserveIn;
         uint amountOut = _getAmountOut(actualAmountIn, reserveIn, reserveOut);
 
@@ -181,17 +140,30 @@ contract MatisseRouter {
             ? (uint(0), amountOut)
             : (amountOut, uint(0));
 
-        IUniswapV2Pair(targetPair).swap(
+        IUniswapV2Pair(pair).swap(
             amount0Out,
             amount1Out,
-            address(this),
+            receiver,
             new bytes(0)
         );
 
-        uint feeAmount = amountOut - ((amountOut * feeBps) / 1000);
+        if (receiver == address(this)) {
+            // Only support native ETH out because we can't differentiate
+            if (tokenOut == WETH9) {
+                IWETH(WETH9).withdraw(amountOut);
 
-        IERC20(tokenOut).safeTransfer(msg.sender, amountOut - feeAmount);
-        IERC20(tokenOut).safeTransfer(FEE_ADDRESS, feeAmount);
+                uint feeAmount = (amountOut * FEE_NUMERATOR) / FEE_DENOMINATOR;
+
+                SafeTransfer.safeTransferETH(msg.sender, amountOut - feeAmount);
+            } else {
+                uint feeAmount = (amountOut * FEE_NUMERATOR) / FEE_DENOMINATOR;
+
+                IERC20(tokenOut).safeTransfer(
+                    msg.sender,
+                    amountOut - feeAmount
+                );
+            }
+        }
     }
 
     function _getAmountOut(
@@ -208,10 +180,5 @@ contract MatisseRouter {
         uint numerator = amountInWithFee * reserveOut;
         uint denominator = reserveIn * 1000 + amountInWithFee;
         amountOut = numerator / denominator;
-    }
-
-    function setFee(uint32 feeBps_) external {
-        require(msg.sender == FEE_ADDRESS, "not-authorized");
-        feeBps = feeBps_;
     }
 }
