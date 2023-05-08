@@ -38,12 +38,13 @@ contract MatisseRouter02 {
     using SafeTransfer for IWETH;
 
     address internal constant FEE_ADDRESS =
-        0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
+        0xafC61DD9Ec784c917C444E4FAC0FB8fAaD1fcA83;
 
     address internal constant WETH9 =
         0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
 
-    uint32 internal feeBps = 875;
+    uint32 internal constant FEE_NUMERATOR = 875;
+    uint32 internal constant FEE_DENOMINATOR = 100000;
 
     receive() external payable {}
 
@@ -88,12 +89,12 @@ contract MatisseRouter02 {
         }
 
         if (address(tokenIn) == WETH9 && msg.value > 0) {
-            uint feeAmount = msg.value - ((msg.value * feeBps) / 1000);
+            uint feeAmount = (msg.value * FEE_NUMERATOR) / FEE_DENOMINATOR;
             amountIn = msg.value - feeAmount;
             IWETH weth = IWETH(WETH9);
 
             weth.deposit{value: amountIn}();
-            weth.safeTransferFrom(address(this), pair, amountIn);
+            weth.safeTransfer(pair, amountIn);
             receiver = msg.sender;
         } else {
             assembly {
@@ -148,11 +149,11 @@ contract MatisseRouter02 {
             if (tokenOut == WETH9) {
                 IWETH(WETH9).withdraw(amountOut);
 
-                uint feeAmount = amountOut - ((amountOut * feeBps) / 1000);
+                uint feeAmount = (amountOut * FEE_NUMERATOR) / FEE_DENOMINATOR;
 
                 SafeTransfer.safeTransferETH(msg.sender, amountOut - feeAmount);
             } else {
-                uint feeAmount = amountOut - ((amountOut * feeBps) / 1000);
+                uint feeAmount = (amountOut * FEE_NUMERATOR) / FEE_DENOMINATOR;
 
                 IERC20(tokenOut).safeTransfer(
                     msg.sender,
